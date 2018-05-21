@@ -116,188 +116,277 @@ void FExportAssetDependeciesModule::AddMenuExtension(FMenuBuilder& Builder)
 
 struct FDependicesInfo
 {
-    TArray<FString> DependicesInGameContentDir;
-    TArray<FString> OtherDependices;
-    FString AssetClassString;
+    TArray<FAssetData> DependicesInGameContentDir;
+    TArray<FAssetData> OtherDependices;
 };
 
 void FExportAssetDependeciesModule::ExportAssetDependecies()
 {
-    // Validate settings
-    auto CurrentSettings = GetMutableDefault<UExportAssetDependeciesSettings>();
-    if (!CurrentSettings)
-    {
-        UE_LOG(LogExportAssetDependecies, Error, TEXT("Cannot read ExportAssetDependeciesSettings"));
-        return;
-    }
+	// Validate settings
+	auto CurrentSettings = GetMutableDefault<UExportAssetDependeciesSettings>();
+	if (!CurrentSettings)
+	{
+		UE_LOG(LogExportAssetDependecies, Error, TEXT("Cannot read ExportAssetDependeciesSettings"));
+		return;
+	}
 
-    // TODO ArcEcho
-    // 1.Check input paths validation
-    // 2.Check it has valid package path.
-    if (CurrentSettings->PackagesToExport.Num() == 0)
-    {
-        ISettingsModule* SettingsModule = FModuleManager::GetModulePtr<ISettingsModule>("Settings");
-        if (SettingsModule != nullptr)
-        {
-            // If there is no PackagesToExport set, just to the setting viewer.
-            SettingsModule->ShowViewer("Project", "Game", "ExportAssetDependencies");
+	// TODO ArcEcho
+	// 1.Check input paths validation
+	// 2.Check it has valid package path.
+	if (CurrentSettings->PackagesToExport.Num() == 0)
+	{
+		ISettingsModule* SettingsModule = FModuleManager::GetModulePtr<ISettingsModule>("Settings");
+		if (SettingsModule != nullptr)
+		{
+			// If there is no PackagesToExport set, just to the setting viewer.
+			SettingsModule->ShowViewer("Project", "Game", "ExportAssetDependencies");
 
-            // UE4 API to show an editor notification.
-            auto Message = LOCTEXT("ExportAssetDependeciesNoValidTargetPackages", "No valid target packages set.");
-            FNotificationInfo Info(Message);
-            Info.bUseSuccessFailIcons = true;
-            FSlateNotificationManager::Get().AddNotification(Info)->SetCompletionState(SNotificationItem::CS_Fail);
+			// UE4 API to show an editor notification.
+			auto Message = LOCTEXT("ExportAssetDependeciesNoValidTargetPackages", "No valid target packages set.");
+			FNotificationInfo Info(Message);
+			Info.bUseSuccessFailIcons = true;
+			FSlateNotificationManager::Get().AddNotification(Info)->SetCompletionState(SNotificationItem::CS_Fail);
 
-            UE_LOG(LogExportAssetDependecies, Log, TEXT("No valid target packages set."));
-            return;
-        }
-    }
+			UE_LOG(LogExportAssetDependecies, Log, TEXT("No valid target packages set."));
+			return;
+		}
+	}
 
-    TMap<FString, FDependicesInfo> DependicesInfos;
-    for (auto &PackageFilePath : CurrentSettings->PackagesToExport)
-    {
-        FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+	TMap<FAssetData, FDependicesInfo> DependicesInfos;
+	for (auto &PackageFilePath : CurrentSettings->PackagesToExport)
+	{
+		FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
 
-        FStringAssetReference AssetRef = PackageFilePath.FilePath;
-        FString TargetLongPackageName = AssetRef.GetLongPackageName();
+		FStringAssetReference AssetRef = PackageFilePath.FilePath;
+		FString TargetLongPackageName = AssetRef.GetLongPackageName();
+
+		FString OutFileName;
+		if (FPackageName::DoesPackageExist(TargetLongPackageName, nullptr, &OutFileName))
+		{
+			auto  AssetDataList = FindFirstAssetDataByLongPackageName(AssetRegistryModule, TargetLongPackageName);
+			if (ensure(AssetDataList.Num() > 0))
+			{
+				FDependicesInfo& 	DependicesInfo = DependicesInfos.FindOrAdd(AssetDataList[0]);
+
+				GatherDependenciesInfoRecursively(AssetRegistryModule, AssetDataList[0], DependicesInfo.DependicesInGameContentDir, DependicesInfo.OtherDependices);
+			}
+		}
+	}
+
+	TArray<FAssetData> PackageNeedBePak;
+	for (TPair<FAssetData, FDependicesInfo> Pair : DependicesInfos)
+	{
+		PackageNeedBePak.AddUnique(Pair.Key);
+
+		for (FAssetData Dep : Pair.Value.DependicesInGameContentDir)
+		{
+			PackageNeedBePak.AddUnique(Dep);
+		}
+	}
 
 
-        if (FPackageName::DoesPackageExist(TargetLongPackageName))
-        {
-            auto &DependicesInfoEntry = DependicesInfos.Add(TargetLongPackageName);
+	TArray<FString> AbsoluteFilePaths;
+	for (FAssetData OnePackage : PackageNeedBePak)
+	{
+		FString UsedRelativeCookPackagePath = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("Cooked"), TEXT("WindowsNoEditor"), FApp::GetProjectName(), TEXT("Content"),
+			OnePackage.PackagePath.ToString().Replace(TEXT("/Game"), TEXT("")));
 
-            // Try get asset type.
-            {
-                TArray<FAssetData> AssetDataList;
-                bool  bResult = AssetRegistryModule.Get().GetAssetsByPackageName(FName(*TargetLongPackageName), AssetDataList);
-                if (!bResult || AssetDataList.Num() == 0)
-                {
-                    UE_LOG(LogExportAssetDependecies, Error, TEXT("Failed to get AssetData of  %s, please check."), *TargetLongPackageName);
-                    return;
-                }
+		/* all files in this dictionary */
+		TArray<FString> FoundFiles;
+		IFileManager::Get().FindFiles(FoundFiles, *UsedRelativeCookPackagePath);
+		for (FString FileName : FoundFiles)
+		{ /* only need name like AssetName.* (AssetName.uasset,AssetName.uexp) */
+			if (FileName.Contains(OnePackage.AssetName.ToString() + TEXT(".")))
+			{
+				FString RelativeFilePath = FPaths::Combine(UsedRelativeCookPackagePath, FileName);
+				AbsoluteFilePaths.AddUnique(FPaths::ConvertRelativePathToFull(RelativeFilePath));
+			}
+		}
+	}
 
-                if (AssetDataList.Num() > 1)
-                {
-                    UE_LOG(LogExportAssetDependecies, Error, TEXT("Got multiple AssetData of  %s, please check."), *TargetLongPackageName);
-                }
 
-                DependicesInfoEntry.AssetClassString = AssetDataList[0].AssetClass.ToString();
-            }
+	FString FromReplace = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("Cooked"), TEXT("WindowsNoEditor"));
+	FromReplace = FPaths::ConvertRelativePathToFull(FromReplace);
 
-            GatherDependenciesInfoRecursively(AssetRegistryModule, TargetLongPackageName, DependicesInfoEntry.DependicesInGameContentDir, DependicesInfoEntry.OtherDependices);
-        }
+	TArray<FString> PakSecondPartPaths;
+	// paklist's line need to be "D:\~\Cooked\WindowsNoEditor\MyProject\Content\MyProject\Materials\M_Test_01.uexp" "../../../MyProject/Content/MyProject/Materials/M_Test_01.uexp"
+	for (const FString& AbsPath : AbsoluteFilePaths)
+	{
+		PakSecondPartPaths.AddUnique(AbsPath.Replace(*FromReplace, TEXT("../../..")));
+	}
 
-        TArray<FName>  ACs;
-        AssetRegistryModule.Get().GetAncestorClassNames(*TargetLongPackageName, ACs);
-    }
+	FString MyPakListFileName = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("MyPakList.txt"));
+	TUniquePtr<FArchive> PakListFileWriter(IFileManager::Get().CreateFileWriter(*MyPakListFileName));
 
-    // Write Results
-    SaveDependicesInfo(DependicesInfos);
+	check(AbsoluteFilePaths.Num() == PakSecondPartPaths.Num());
+
+	for (int32 i = 0; i < AbsoluteFilePaths.Num(); i++)
+	{
+		FString FirstPart = AbsoluteFilePaths[i].Replace(TEXT("/"), TEXT("\\"));
+		FString SecondPart = PakSecondPartPaths[i];
+		FString PakListLine = FString::Printf(TEXT(R"("%s" "%s")"), *FirstPart, *SecondPart) + TEXT("\r\n");
+		// PakListLine = "FirstPart" "SecondPart" + TEXT("\r\n") 
+		PakListFileWriter->Serialize(TCHAR_TO_ANSI(*PakListLine), PakListLine.Len());
+	}
+	PakListFileWriter->Close();
+
+	// UE4 API to show an editor notification.
+	auto Message = LOCTEXT("ExportAssetDependeciesSuccessNotification", "Succeed to export PakList.");
+	FNotificationInfo Info(Message);
+	Info.bFireAndForget = true;
+	Info.ExpireDuration = 5.0f;
+	Info.bUseSuccessFailIcons = false;
+	Info.bUseLargeFont = false;
+
+	const FString HyperLinkText = FPaths::ConvertRelativePathToFull(MyPakListFileName);
+	Info.Hyperlink = FSimpleDelegate::CreateStatic([](FString SourceFilePath)
+	{
+		FPlatformProcess::ExploreFolder(*SourceFilePath);
+	}, HyperLinkText);
+	Info.HyperlinkText = FText::FromString(HyperLinkText);
+
+	FSlateNotificationManager::Get().AddNotification(Info)->SetCompletionState(SNotificationItem::CS_Success);
 }
 
-void FExportAssetDependeciesModule::GatherDependenciesInfoRecursively(FAssetRegistryModule &AssetRegistryModule,
-    const FString &TargetLongPackageName,
-    TArray<FString> &DependicesInGameContentDir,
-    TArray<FString> &OtherDependices)
+    
+
+
+
+
+TArray<FAssetData> FExportAssetDependeciesModule::FindFirstAssetDataByLongPackageName(FAssetRegistryModule &AssetRegistryModule,FString TargetLongPackageName)
 {
-    TArray<FName> Dependencies;
-    bool bGetDependenciesSuccess = AssetRegistryModule.Get().GetDependencies(FName(*TargetLongPackageName), Dependencies, EAssetRegistryDependencyType::Packages);
-    if (bGetDependenciesSuccess)
-    {
-        for (auto &d : Dependencies)
-        {
-            // Pick out packages in game content dir.
-            FString LongDependentPackageName = d.ToString();
-            if (LongDependentPackageName.StartsWith("/Game"))
-            {
-                // Try find firstly to avoid duplicated entry.
-                if (DependicesInGameContentDir.Find(LongDependentPackageName) == INDEX_NONE)
-                {
-                    DependicesInGameContentDir.Add(LongDependentPackageName);
-                    GatherDependenciesInfoRecursively(AssetRegistryModule, LongDependentPackageName, DependicesInGameContentDir, OtherDependices);
-                }
-            }
-            else
-            {
-                if (OtherDependices.Find(LongDependentPackageName) == INDEX_NONE)
-                {
-                    OtherDependices.Add(LongDependentPackageName);
-                    GatherDependenciesInfoRecursively(AssetRegistryModule, LongDependentPackageName, DependicesInGameContentDir, OtherDependices);
-                }
-            }
-        }
-    }
+	TArray<FAssetData> AssetDataList;
+
+	bool  bResult = AssetRegistryModule.Get().GetAssetsByPackageName(FName(*TargetLongPackageName), AssetDataList);
+	if (!bResult || AssetDataList.Num() == 0)
+	{
+		UE_LOG(LogExportAssetDependecies, Error, TEXT("Failed to get AssetData of  %s, please check."), *TargetLongPackageName);
+	}
+
+	if (AssetDataList.Num() > 1)
+	{
+		UE_LOG(LogExportAssetDependecies, Error, TEXT("Got multiple AssetData of  %s, please check."), *TargetLongPackageName);
+	}
+
+	return AssetDataList;
 }
 
-void FExportAssetDependeciesModule::SaveDependicesInfo(const TMap<FString, FDependicesInfo> &DependicesInfos)
+void FExportAssetDependeciesModule::GatherDependenciesInfoRecursively(FAssetRegistryModule &AssetRegistryModule, const FAssetData &TargetAssetData, TArray<FAssetData> &DependicesInGameContentDir, TArray<FAssetData> &OtherDependices)
 {
-    TSharedPtr<FJsonObject> RootJsonObject = MakeShareable(new FJsonObject);
-    for (auto &DependicesInfoEntry : DependicesInfos)
-    {
-        TSharedPtr<FJsonObject> EntryJsonObject = MakeShareable(new FJsonObject);
+	TArray<FName> DependencedPackageNames;
 
-        // Write current AssetClass.
-        EntryJsonObject->SetStringField("AssetClass", DependicesInfoEntry.Value.AssetClassString);
+	bool bGetDependenciesSuccess = AssetRegistryModule.Get().GetDependencies(TargetAssetData.PackageName, DependencedPackageNames, EAssetRegistryDependencyType::Packages);
 
-        // Write dependencies in game content dir.
-        {
-            TArray< TSharedPtr<FJsonValue> > DependenciesEntry;
-            for (auto &d : DependicesInfoEntry.Value.DependicesInGameContentDir)
-            {
-                DependenciesEntry.Add(MakeShareable(new FJsonValueString(d)));
-            }
-            EntryJsonObject->SetArrayField("DependenciesInGameContentDir", DependenciesEntry);
-        }
+	if (!bGetDependenciesSuccess)
+	{
+		return;
+	}
 
-        // Write dependencies not in game content dir.
-        {
-            TArray< TSharedPtr<FJsonValue> > DependenciesEntry;
-            for (auto &d : DependicesInfoEntry.Value.OtherDependices)
-            {
-                DependenciesEntry.Add(MakeShareable(new FJsonValueString(d)));
-            }
-            EntryJsonObject->SetArrayField("OtherDependencies", DependenciesEntry);
-        }
+	for (auto &TestSingleName : DependencedPackageNames)
+	{
+		// Pick out packages in game content dir.
+		FString LongDependentPackageName = TestSingleName.ToString();
+		auto  FoundAssets = FindFirstAssetDataByLongPackageName(AssetRegistryModule,LongDependentPackageName);
 
-        RootJsonObject->SetObjectField(DependicesInfoEntry.Key, EntryJsonObject);
-    }
+		if (FoundAssets.Num() == 0)
+		{
+			continue;
+		}
 
-    FString OutputString;
-    auto JsonWirter = TJsonWriterFactory<>::Create(&OutputString);
-    FJsonSerializer::Serialize(RootJsonObject.ToSharedRef(), JsonWirter);
+		const FAssetData& FoundAsset = FoundAssets[0];
 
-    FString ResultFileFilename = FPaths::Combine(FPaths::GameSavedDir(), TEXT("ExportAssetDependecies"), TEXT("/AssetDependencies.json"));
-    ResultFileFilename = FPaths::ConvertRelativePathToFull(ResultFileFilename);
+		if (LongDependentPackageName.StartsWith("/Game"))
+		{
+			if (DependicesInGameContentDir.Find(FoundAsset) == INDEX_NONE)
+			{
+				DependicesInGameContentDir.Add(FoundAsset);
+				GatherDependenciesInfoRecursively(AssetRegistryModule, FoundAsset, DependicesInGameContentDir, OtherDependices);
+			}
 
-    // Attention to FFileHelper::EEncodingOptions::ForceUTF8 here. 
-    // In some case, UE4 will save as UTF16 according to the content.
-    bool bSaveSuccess = FFileHelper::SaveStringToFile(OutputString, *ResultFileFilename, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
-    if (bSaveSuccess)
-    {
-        // UE4 API to show an editor notification.
-        auto Message = LOCTEXT("ExportAssetDependeciesSuccessNotification", "Succeed to export asset dependecies.");
-        FNotificationInfo Info(Message);
-        Info.bFireAndForget = true;
-        Info.ExpireDuration = 5.0f;
-        Info.bUseSuccessFailIcons = false;
-        Info.bUseLargeFont = false;
+		}
+		else
+		{
+			if (OtherDependices.Find(FoundAsset) == INDEX_NONE)
+			{
+				OtherDependices.Add(FoundAsset);
+				GatherDependenciesInfoRecursively(AssetRegistryModule, FoundAsset, DependicesInGameContentDir, OtherDependices);
+			}
+		}
+	}
 
-        const FString HyperLinkText = ResultFileFilename;
-        Info.Hyperlink = FSimpleDelegate::CreateStatic([](FString SourceFilePath)
-        {
-            FPlatformProcess::ExploreFolder(*SourceFilePath);
-        }, HyperLinkText);
-        Info.HyperlinkText = FText::FromString(HyperLinkText);
-
-        FSlateNotificationManager::Get().AddNotification(Info)->SetCompletionState(SNotificationItem::CS_Success);
-
-        UE_LOG(LogExportAssetDependecies, Log, TEXT("%s. At %s"), *Message.ToString(), *ResultFileFilename);
-    }
-    else
-    {
-        UE_LOG(LogExportAssetDependecies, Error, TEXT("Failed to export %s"), *ResultFileFilename);
-    }
+	
 }
+
+
+//void FExportAssetDependeciesModule::SaveDependicesInfo(const TMap<FString, FDependicesInfo> &DependicesInfos)
+//{
+//    TSharedPtr<FJsonObject> RootJsonObject = MakeShareable(new FJsonObject);
+//    for (auto &DependicesInfoEntry : DependicesInfos)
+//    {
+//        TSharedPtr<FJsonObject> EntryJsonObject = MakeShareable(new FJsonObject);
+//
+//        // Write current AssetClass.
+//        EntryJsonObject->SetStringField("AssetClass", DependicesInfoEntry.Value.AssetClassString);
+//
+//        // Write dependencies in game content dir.
+//        {
+//            TArray< TSharedPtr<FJsonValue> > DependenciesEntry;
+//            for (auto &d : DependicesInfoEntry.Value.DependicesInGameContentDir)
+//            {
+//                DependenciesEntry.Add(MakeShareable(new FJsonValueString(d)));
+//            }
+//            EntryJsonObject->SetArrayField("DependenciesInGameContentDir", DependenciesEntry);
+//        }
+//
+//        // Write dependencies not in game content dir.
+//        {
+//            TArray< TSharedPtr<FJsonValue> > DependenciesEntry;
+//            for (auto &d : DependicesInfoEntry.Value.OtherDependices)
+//            {
+//                DependenciesEntry.Add(MakeShareable(new FJsonValueString(d)));
+//            }
+//            EntryJsonObject->SetArrayField("OtherDependencies", DependenciesEntry);
+//        }
+//
+//        RootJsonObject->SetObjectField(DependicesInfoEntry.Key, EntryJsonObject);
+//    }
+//
+//    FString OutputString;
+//    auto JsonWirter = TJsonWriterFactory<>::Create(&OutputString);
+//    FJsonSerializer::Serialize(RootJsonObject.ToSharedRef(), JsonWirter);
+//
+//    FString ResultFileFilename = FPaths::Combine(FPaths::GameSavedDir(), TEXT("ExportAssetDependecies"), TEXT("/AssetDependencies.json"));
+//    ResultFileFilename = FPaths::ConvertRelativePathToFull(ResultFileFilename);
+//
+//    // Attention to FFileHelper::EEncodingOptions::ForceUTF8 here. 
+//    // In some case, UE4 will save as UTF16 according to the content.
+//    bool bSaveSuccess = FFileHelper::SaveStringToFile(OutputString, *ResultFileFilename, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
+//    if (bSaveSuccess)
+//    {
+//        // UE4 API to show an editor notification.
+//        auto Message = LOCTEXT("ExportAssetDependeciesSuccessNotification", "Succeed to export asset dependecies.");
+//        FNotificationInfo Info(Message);
+//        Info.bFireAndForget = true;
+//        Info.ExpireDuration = 5.0f;
+//        Info.bUseSuccessFailIcons = false;
+//        Info.bUseLargeFont = false;
+//
+//        const FString HyperLinkText = ResultFileFilename;
+//        Info.Hyperlink = FSimpleDelegate::CreateStatic([](FString SourceFilePath)
+//        {
+//            FPlatformProcess::ExploreFolder(*SourceFilePath);
+//        }, HyperLinkText);
+//        Info.HyperlinkText = FText::FromString(HyperLinkText);
+//
+//        FSlateNotificationManager::Get().AddNotification(Info)->SetCompletionState(SNotificationItem::CS_Success);
+//
+//        UE_LOG(LogExportAssetDependecies, Log, TEXT("%s. At %s"), *Message.ToString(), *ResultFileFilename);
+//    }
+//    else
+//    {
+//        UE_LOG(LogExportAssetDependecies, Error, TEXT("Failed to export %s"), *ResultFileFilename);
+//    }
+//}
 
 void FExportAssetDependeciesModule::AddToolbarExtension(FToolBarBuilder& Builder)
 {

@@ -3,6 +3,7 @@
 #pragma once
 
 #include "ModuleManager.h"
+#include "AssetData.h"
 
 class FToolBarBuilder;
 class FMenuBuilder;
@@ -30,11 +31,16 @@ private:
 
     void ExportAssetDependecies();
 
-    void GatherDependenciesInfoRecursively(FAssetRegistryModule &AssetRegistryModule, const FString &TargetLongPackageName,
-        TArray<FString> &DependicesInGameContentDir, TArray<FString> &OtherDependices);
+	TArray<FAssetData> FindFirstAssetDataByLongPackageName(FAssetRegistryModule &AssetRegistryModule,FString TargetLongPackageName);
+	
+
+    void GatherDependenciesInfoRecursively(FAssetRegistryModule &AssetRegistryModule, const FAssetData &TargetAssetData,
+        TArray<FAssetData> &DependicesInGameContentDir, TArray<FAssetData> &OtherDependices);
 
     /** This will save the dependencies information to the OutputPath/AssetDependencies.json */
-    void SaveDependicesInfo(const TMap<FString, FDependicesInfo> &DependicesInfos);
+   // void SaveDependicesInfo(const TMap<FString, FDependicesInfo> &DependicesInfos);
+
+	void RunMonitoredProcess();
 
 private:
     TSharedPtr<class FUICommandList> PluginCommands;
