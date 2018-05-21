@@ -44,6 +44,7 @@ public class ExportAssetDependecies : ModuleRules
 				"Slate",
 				"SlateCore",
                 "Json",
+                "EditorStyle"
 				// ... add private dependencies that you statically link with here ...	
 			}
 			);

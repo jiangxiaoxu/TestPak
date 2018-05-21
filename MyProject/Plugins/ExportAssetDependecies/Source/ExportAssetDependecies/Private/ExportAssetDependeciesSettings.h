@@ -8,14 +8,27 @@
 /**
 * Settings for export asset dependencies.
 */
+USTRUCT(BlueprintType)
+struct FOnePakInfo 
+{
+	GENERATED_BODY()
+public:
+	/** You can use copied asset string reference here, e.g. World'/Game/NewMap.NewMap'*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Default)
+		TArray<FFilePath> PackagesToExport;
+
+	UPROPERTY( EditAnywhere, BlueprintReadWrite, Category = Default)
+		TArray<FDirectoryPath> DirectoryToExport;
+};
+
+
 UCLASS(config = Game, defaultconfig)
 class EXPORTASSETDEPENDECIES_API UExportAssetDependeciesSettings : public UObject
 {
-    GENERATED_UCLASS_BODY()
+    GENERATED_BODY()
 
 public:
-
-    /** You can use copied asset string reference here, e.g. World'/Game/NewMap.NewMap'*/
-    UPROPERTY(config, EditAnywhere, BlueprintReadWrite, Category = Default)
-        TArray<FFilePath> PackagesToExport;
+	/* key will be .Pak file name  */
+	UPROPERTY(config, EditAnywhere, BlueprintReadWrite, Category = Default)
+		TMap<FName, FOnePakInfo>  PackagesToExportMap;
 };

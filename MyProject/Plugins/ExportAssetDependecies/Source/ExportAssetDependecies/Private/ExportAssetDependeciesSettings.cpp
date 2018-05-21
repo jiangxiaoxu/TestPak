@@ -6,10 +6,5 @@
 
 #define LOCTEXT_NAMESPACE "ExportAssetDependecies"
 
-UExportAssetDependeciesSettings::UExportAssetDependeciesSettings(const FObjectInitializer& Initializer)
-    : Super(Initializer)
-{
-
-}
 
 #undef LOCTEXT_NAMESPACE
