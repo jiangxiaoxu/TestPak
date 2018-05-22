@@ -79,8 +79,8 @@ class FPackageContentCompleteTask
 {
 public:
 
-	FPackageContentCompleteTask(const FString& InPakFileAbsolutePath)
-		: PakFileAbsolutePath(InPakFileAbsolutePath)
+	FPackageContentCompleteTask(const FString& InOutputFileAbsolutePath)
+		: OutputFileAbsolutePath(InOutputFileAbsolutePath)
 	{ }
 
 	void DoTask(ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent)
@@ -153,7 +153,7 @@ public:
 		Info.bUseSuccessFailIcons = false;
 		Info.bUseLargeFont = true;
 
-		const FString HyperLinkText = PakFileAbsolutePath;
+		const FString HyperLinkText = OutputFileAbsolutePath;
 		Info.Hyperlink = FSimpleDelegate::CreateStatic([](FString SourceFilePath)
 		{
 			FPlatformProcess::ExploreFolder(*SourceFilePath);
@@ -173,7 +173,7 @@ public:
 
 private:
 
-	FString PakFileAbsolutePath;
+	FString OutputFileAbsolutePath;
 };
 
 
@@ -275,7 +275,9 @@ void FExportAssetDependeciesModule::ExportAssetDependecies()
 {
 	// Validate settings
 
-	TMap<FName, TArray<FFilePath>> PackagesNeedToExportMap = GetPackagesNeedToExport();
+	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+
+	TMap<FName, TArray<FFilePath>> PackagesNeedToExportMap = GetPackagesNeedToExport(AssetRegistryModule);
 
 	if (PackagesNeedToExportMap.Num() == 0)
 	{
@@ -299,161 +301,128 @@ void FExportAssetDependeciesModule::ExportAssetDependecies()
 		}
 	}
 
+	for (TPair<FName, TArray<FFilePath>> NamedPackageFilePathArray : PackagesNeedToExportMap)
+	{  // in one named group, asset<--->depend
+		const FString TheUniqueGroupName = NamedPackageFilePathArray.Key.ToString();
 
-	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+		TMap<FAssetData, FDependicesInfo> DependicesInfos;
+		//fetch every asset->DependicesInfo
+		for (FFilePath PackageFilePath : NamedPackageFilePathArray.Value)
+		{
+			FStringAssetReference AssetRef = PackageFilePath.FilePath;
+			FString TargetLongPackageName = AssetRef.GetLongPackageName();
 
-	
-
-	TMap< FName, FString> NamedPakListMap;
-
-
-		for (TPair<FName, TArray<FFilePath>> NamedPackageFilePathArray : PackagesNeedToExportMap)
-		{  // in one named group, asset<--->depend
-			const FString TheUniqueGroupName = NamedPackageFilePathArray.Key.ToString();
-
-	
-
-			TMap<FAssetData, FDependicesInfo> DependicesInfos;
-			for (FFilePath PackageFilePath : NamedPackageFilePathArray.Value)
+			FString OutFileName;
+			if (FPackageName::DoesPackageExist(TargetLongPackageName, nullptr, &OutFileName))
 			{
-				FStringAssetReference AssetRef = PackageFilePath.FilePath;
-				FString TargetLongPackageName = AssetRef.GetLongPackageName();
-
-				FString OutFileName;
-				if (FPackageName::DoesPackageExist(TargetLongPackageName, nullptr, &OutFileName))
+				auto  AssetDataList = FindFirstAssetDataByLongPackageName(AssetRegistryModule, TargetLongPackageName);
+				if (ensure(AssetDataList.Num() > 0))
 				{
-					auto  AssetDataList = FindFirstAssetDataByLongPackageName(AssetRegistryModule, TargetLongPackageName);
-					if (ensure(AssetDataList.Num() > 0))
-					{
-						FDependicesInfo& 	DependicesInfo = DependicesInfos.FindOrAdd(AssetDataList[0]);
-						GatherDependenciesInfoRecursively(AssetRegistryModule, AssetDataList[0], DependicesInfo.DependicesInGameContentDir, DependicesInfo.OtherDependices);
-					}
+					FDependicesInfo& 	DependicesInfo = DependicesInfos.FindOrAdd(AssetDataList[0]);
+					GatherDependenciesInfoRecursively(AssetRegistryModule, AssetDataList[0], DependicesInfo.DependicesInGameContentDir, DependicesInfo.OtherDependices);
 				}
 			}
-			///
-			TArray<FAssetData> PackageNeedBePak;
-			for (TPair<FAssetData, FDependicesInfo> Pair : DependicesInfos)
-			{
-				PackageNeedBePak.AddUnique(Pair.Key);
-
-				for (FAssetData Dep : Pair.Value.DependicesInGameContentDir)
-				{
-					PackageNeedBePak.AddUnique(Dep);
-				}
-			}
-			TArray<FString> AbsoluteFilePaths;
-			for (FAssetData OnePackage : PackageNeedBePak)
-			{
-				FString UsedRelativeCookPackagePath = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("Cooked"), TEXT("WindowsNoEditor"), FApp::GetProjectName(), TEXT("Content"),
-					OnePackage.PackagePath.ToString().Replace(TEXT("/Game"), TEXT("")));
-
-				/* all files in this dictionary */
-				TArray<FString> FoundFiles;
-				IFileManager::Get().FindFiles(FoundFiles, *UsedRelativeCookPackagePath);
-				for (FString FileName : FoundFiles)
-				{ /* only need name like AssetName.* (AssetName.uasset,AssetName.uexp) */
-					if (FileName.Contains(OnePackage.AssetName.ToString() + TEXT(".")))
-					{
-						FString RelativeFilePath = FPaths::Combine(UsedRelativeCookPackagePath, FileName);
-						AbsoluteFilePaths.AddUnique(FPaths::ConvertRelativePathToFull(RelativeFilePath));
-					}
-				}
-			}
-
-			TArray<FString> PakSecondPartPaths;
-			// paklist's line need to be "D:\~\Cooked\WindowsNoEditor\MyProject\Content\MyProject\Materials\M_Test_01.uexp" "../../../MyProject/Content/MyProject/Materials/M_Test_01.uexp"
-			for (const FString& AbsPath : AbsoluteFilePaths)
-			{
-				const static FString FromReplace = FPaths::ConvertRelativePathToFull(FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("Cooked"), TEXT("WindowsNoEditor")));
-
-				PakSecondPartPaths.AddUnique(AbsPath.Replace(*FromReplace, TEXT("../../..")));
-			}
-
-			const FString PakListName = FString::Printf(TEXT("%s.txt"),*TheUniqueGroupName);
-
-			FString MyPakListFileName = FPaths::Combine(FPaths::ProjectSavedDir(), *PakListName);
-			TUniquePtr<FArchive> PakListFileWriter(IFileManager::Get().CreateFileWriter(*MyPakListFileName));
-
-			check(AbsoluteFilePaths.Num() == PakSecondPartPaths.Num());
-
-			for (int32 i = 0; i < AbsoluteFilePaths.Num(); i++)
-			{
-				FString FirstPart = AbsoluteFilePaths[i].Replace(TEXT("/"), TEXT("\\"));
-				FString SecondPart = PakSecondPartPaths[i];
-				FString PakListLine = FString::Printf(TEXT(R"("%s" "%s")"), *FirstPart, *SecondPart) + TEXT("\r\n");
-				// PakListLine = "FirstPart" "SecondPart" + TEXT("\r\n") 
-				PakListFileWriter->Serialize(TCHAR_TO_ANSI(*PakListLine), PakListLine.Len());
-			}
-			PakListFileWriter->Close();
-			const FString AbslutePakListFileName = FPaths::ConvertRelativePathToFull(MyPakListFileName);
-
-///
-			{
-				// UE4 API to show an editor notification.
-				auto Message = LOCTEXT("ExportAssetDependeciesSuccessNotification", "Succeed to export PakList.");
-				FNotificationInfo Info(Message);
-				Info.bFireAndForget = true;
-				Info.ExpireDuration = 5.0f;
-				Info.bUseSuccessFailIcons = false;
-				Info.bUseLargeFont = false;
-
-				const FString HyperLinkText = AbslutePakListFileName;
-				Info.Hyperlink = FSimpleDelegate::CreateStatic([](FString SourceFilePath)
-				{
-					FPlatformProcess::ExploreFolder(*SourceFilePath);
-				}, HyperLinkText);
-				Info.HyperlinkText = FText::FromString(HyperLinkText);
-
-				FSlateNotificationManager::Get().AddNotification(Info)->SetCompletionState(SNotificationItem::CS_Success);
-			}
-			FString UnrealPakPath = FPaths::ConvertRelativePathToFull(FPaths::EngineDir() / TEXT("Binaries/Win64/UnrealPak.exe"));
-
-
-			const FString PakFileName = FString::Printf(TEXT("%s.pak"), *TheUniqueGroupName);
-
-			FString OutPutFilePath = TEXT(R"(E:\)")+ PakFileName;
-
-			FString PakCommandLine = OutPutFilePath + FString(TEXT(R"( -compress -Create=)")) + FString(TEXT(R"(")")) + AbslutePakListFileName + FString(TEXT(R"(")"));
-
-	//		FString ListPakCommandLine = OutPutFilePath + TEXT(" -list");
-
-			RunMonitoredProcess(UnrealPakPath,
-				PakCommandLine,
-				FText::FromString(TEXT("Process Pak")),
-				FText::FromString("Process Pak"),
-				FEditorStyle::GetBrush(TEXT("MainFrame.CookContent")),
-				OutPutFilePath
-			);
-
 		}
 
-	
+		//fetch all package about group asset and theirs Dependices package
+		TArray<FAssetData> PackageWillBePak;
+		for (TPair<FAssetData, FDependicesInfo> Pair : DependicesInfos)
+		{
+			PackageWillBePak.AddUnique(Pair.Key);
+
+			for (FAssetData Dep : Pair.Value.DependicesInGameContentDir) //now ,only care Dependices In Game Content Directory
+			{
+				PackageWillBePak.AddUnique(Dep);
+			}
+		}
+
+		TArray<FString> AbsoluteFilePaths; //will convert pakckage assetdata => correspond file in saved/cooked/dir
+		for (FAssetData OnePackage : PackageWillBePak)
+		{
+			FString UsedRelativeCookPackagePath = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("Cooked"), TEXT("WindowsNoEditor"), FApp::GetProjectName(), TEXT("Content"),
+				OnePackage.PackagePath.ToString().Replace(TEXT("/Game"), TEXT("")));
+
+			/* all files in this dictionary */
+			TArray<FString> FoundFiles;
+			IFileManager::Get().FindFiles(FoundFiles, *UsedRelativeCookPackagePath);
+			for (FString FileName : FoundFiles)
+			{ /* only need name like AssetName.* (AssetName.uasset,AssetName.uexp) */
+				if (FileName.Contains(OnePackage.AssetName.ToString() + TEXT(".")))
+				{
+					FString RelativeFilePath = FPaths::Combine(UsedRelativeCookPackagePath, FileName);
+					AbsoluteFilePaths.AddUnique(FPaths::ConvertRelativePathToFull(RelativeFilePath));
+				}
+			}
+		}
+
+		TArray<FString> PakSecondPartPaths;
+		// paklist's line need to be "D:\~\Cooked\WindowsNoEditor\MyProject\Content\MyProject\Materials\M_Test_01.uexp" "../../../MyProject/Content/MyProject/Materials/M_Test_01.uexp"
+		for (const FString& AbsPath : AbsoluteFilePaths)
+		{
+			const static FString FromReplace = FPaths::ConvertRelativePathToFull(FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("Cooked"), TEXT("WindowsNoEditor")));
+
+			PakSecondPartPaths.AddUnique(AbsPath.Replace(*FromReplace, TEXT("../../..")));
+		}
+
+		const FString PakListName = FString::Printf(TEXT("%s-PakList.txt"), *TheUniqueGroupName);
+		const FString MyPakListFileName = FPaths::Combine(FPaths::ProjectSavedDir(), *PakListName);
+		TUniquePtr<FArchive> PakListFileWriter(IFileManager::Get().CreateFileWriter(*MyPakListFileName));
+
+		check(AbsoluteFilePaths.Num() == PakSecondPartPaths.Num());
+
+		for (int32 i = 0; i < AbsoluteFilePaths.Num(); i++)
+		{
+			FString FirstPart = AbsoluteFilePaths[i].Replace(TEXT("/"), TEXT("\\"));
+			FString SecondPart = PakSecondPartPaths[i];
+			// PakListLine = "FirstPart" "SecondPart" + TEXT("\r\n") 
+			FString PakListLine = FString::Printf(TEXT(R"("%s" "%s")"), *FirstPart, *SecondPart) + TEXT("\r\n");
+			PakListFileWriter->Serialize(TCHAR_TO_ANSI(*PakListLine), PakListLine.Len());
+		}
+		PakListFileWriter->Close();
+		const FString AbslutePakListFileName = FPaths::ConvertRelativePathToFull(MyPakListFileName);
+
+		///
+		{
+			// UE4 API to show an editor notification.
+			auto Message = LOCTEXT("ExportAssetDependeciesSuccessNotification", "Succeed to export PakList.");
+			FNotificationInfo Info(Message);
+			Info.bFireAndForget = true;
+			Info.ExpireDuration = 5.0f;
+			Info.bUseSuccessFailIcons = false;
+			Info.bUseLargeFont = false;
+
+			const FString HyperLinkText = AbslutePakListFileName;
+			Info.Hyperlink = FSimpleDelegate::CreateStatic([](FString SourceFilePath)
+			{
+				FPlatformProcess::ExploreFolder(*SourceFilePath);
+			}, HyperLinkText);
+			Info.HyperlinkText = FText::FromString(HyperLinkText);
+
+			FSlateNotificationManager::Get().AddNotification(Info)->SetCompletionState(SNotificationItem::CS_Success);
+		}
+		FString UnrealPakPath = FPaths::ConvertRelativePathToFull(FPaths::EngineDir() / TEXT("Binaries/Win64/UnrealPak.exe"));
 
 
+		const FString PakFileName = FString::Printf(TEXT("%s.pak"), *TheUniqueGroupName);
 
+		FString OutPutFilePath = TEXT(R"(E:\)") + PakFileName;
 
+		FString PakCommandLine = OutPutFilePath + FString(TEXT(R"( -compress -Create=)")) + FString(TEXT(R"(")")) + AbslutePakListFileName + FString(TEXT(R"(")"));
 
+		//		FString ListPakCommandLine = OutPutFilePath + TEXT(" -list");
 
-	
-	
+		RunMonitoredProcess(UnrealPakPath,
+			PakCommandLine,
+			FText::FromString(FString::Printf(TEXT("Process Pak %s.pak"),*TheUniqueGroupName)),
+			FText::FromString(FString::Printf(TEXT("Process Pak %s.pak"), *TheUniqueGroupName)),
+			FEditorStyle::GetBrush(TEXT("MainFrame.CookContent")),
+			OutPutFilePath
+		);
 
-
-
-
-	/*RunMonitoredProcess(UnrealPakPath,
-		ListPakCommandLine,
-		FText::FromString(TEXT("List Pak")),
-		FText::FromString("List Pak"),
-		FEditorStyle::GetBrush(TEXT("MainFrame.CookContent"))
-	);*/
-
+	}
 }
 
     
-
-
-
-
 TArray<FAssetData> FExportAssetDependeciesModule::FindFirstAssetDataByLongPackageName(FAssetRegistryModule &AssetRegistryModule,FString TargetLongPackageName)
 {
 	TArray<FAssetData> AssetDataList;
@@ -644,7 +613,7 @@ void FExportAssetDependeciesModule::HandleUatCancelButtonClicked(TSharedPtr<FMon
 	}
 }
 
-TMap<FName, TArray<FFilePath>> FExportAssetDependeciesModule::GetPackagesNeedToExport() const
+TMap<FName, TArray<FFilePath>> FExportAssetDependeciesModule::GetPackagesNeedToExport(FAssetRegistryModule& AssetRegistryModule) const
 {
 	TMap<FName, TArray<FFilePath>> Results;
 
@@ -655,16 +624,36 @@ TMap<FName, TArray<FFilePath>> FExportAssetDependeciesModule::GetPackagesNeedToE
 		return Results;
 	}
 
-	for (TPair<FName,FOnePakInfo> Pair : CurrentSettings->PackagesToExportMap)
+	for (TPair<FName, FOnePakInfo> Pair : CurrentSettings->PackagesToExportMap)
 	{
-		const  TArray<FFilePath>& PackagesToExport = Pair.Value.PackagesToExport;
+		const FName& GroupName = Pair.Key;
 
+		const  TArray<FFilePath>& PackagesToExport = Pair.Value.PackagesToExport;
 		for (const FFilePath& FilePath : PackagesToExport)
 		{
-			Results.FindOrAdd(Pair.Key).AddUnique(FilePath);
+			Results.FindOrAdd(GroupName).AddUnique(FilePath);
 		}
 
+		const TArray<FDirectoryPath> DirectorysToSearch = Pair.Value.DirectoryToExport;
+		for (const FDirectoryPath& DirectoryPath : DirectorysToSearch)
+		{
+			FString NormalizedDirectoryPath = DirectoryPath.Path;
+			FPaths::NormalizeDirectoryName(NormalizedDirectoryPath);
+
+			TArray<FAssetData> FetchAssetData;
+			if (AssetRegistryModule.Get().GetAssetsByPath(*NormalizedDirectoryPath, FetchAssetData, true))
+			{
+				for (const FAssetData& AssetData : FetchAssetData)
+				{
+					Results.FindOrAdd(GroupName).AddUnique({ AssetData.ObjectPath.ToString() });
+				}
+			}
+		}
 	}
+
+
+	
+
 
 	return Results;
 }

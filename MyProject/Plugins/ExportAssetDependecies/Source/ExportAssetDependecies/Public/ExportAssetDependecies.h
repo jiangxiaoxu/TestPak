@@ -59,7 +59,7 @@ private:
 
 	static void HandleUatCancelButtonClicked(TSharedPtr<FMonitoredProcess> PackagerProcess);
 
-	TMap<FName, TArray<FFilePath>> GetPackagesNeedToExport()const;
+	TMap<FName, TArray<FFilePath>> GetPackagesNeedToExport(FAssetRegistryModule& AssetRegistryModule)const;
 private:
     TSharedPtr<class FUICommandList> PluginCommands;
 };
