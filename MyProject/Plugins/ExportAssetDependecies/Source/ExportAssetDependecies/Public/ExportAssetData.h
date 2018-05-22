@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Engine/DataAsset.h"
+#include"Engine/EngineTypes.h"
 #include "ExportAssetData.generated.h"
 
 /**
@@ -19,6 +20,7 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Default)
 		TArray<FFilePath> PackagesToExport;
 
+	// You can use copied Directory string  here, e.g. /Game/Blueprint/
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Default)
 		TArray<FDirectoryPath> DirectoryToExport;
 };
@@ -33,6 +35,4 @@ public:
 	/* key will be .Pak file name  */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Default)
 		TMap<FName, FOnePakInfo>  PackagesToExportMap;
-	
-	
 };
