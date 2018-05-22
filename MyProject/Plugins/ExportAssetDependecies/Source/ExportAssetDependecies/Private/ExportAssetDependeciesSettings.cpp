@@ -4,6 +4,8 @@
 #include "ExportAssetDependeciesSettings.h"
 #include "UObject/ConstructorHelpers.h"
 
+#include "ExportAssetData.h"
+
 #define LOCTEXT_NAMESPACE "ExportAssetDependecies"
 
 

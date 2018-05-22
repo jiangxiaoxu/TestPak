@@ -26,6 +26,8 @@
 //#include "Editor/EditorEngine.h"
 #include "Editor.h"
 
+#include "ExportAssetData.h"
+
 
 DEFINE_LOG_CATEGORY(LogExportAssetDependecies);
 #define LOCTEXT_NAMESPACE "FExportAssetDependeciesModule"
@@ -618,13 +620,17 @@ TMap<FName, TArray<FFilePath>> FExportAssetDependeciesModule::GetPackagesNeedToE
 	TMap<FName, TArray<FFilePath>> Results;
 
 	const UExportAssetDependeciesSettings* CurrentSettings = GetDefault<UExportAssetDependeciesSettings>();
-	if (!CurrentSettings)
+	TSoftObjectPtr<UExportAssetData> ExportAssetDataSoftPtr = CurrentSettings ? CurrentSettings->ExportAssetDescriptData : nullptr;
+
+	UExportAssetData* ExportAssetData = ExportAssetDataSoftPtr.LoadSynchronous();
+
+	if (!ExportAssetData)
 	{
-		UE_LOG(LogExportAssetDependecies, Error, TEXT("Cannot read ExportAssetDependeciesSettings"));
+		UE_LOG(LogExportAssetDependecies, Error, TEXT("Cannot read ExportAssetData"));
 		return Results;
 	}
 
-	for (TPair<FName, FOnePakInfo> Pair : CurrentSettings->PackagesToExportMap)
+	for (TPair<FName, FOnePakInfo> Pair : ExportAssetData->PackagesToExportMap)
 	{
 		const FName& GroupName = Pair.Key;
 
